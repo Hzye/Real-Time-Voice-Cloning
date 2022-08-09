@@ -93,16 +93,6 @@ class SpeakerEncoder(nn.Module):
             sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
             sim_matrix[j, :, j] = (embeds[j] * centroids_excl[j]).sum(dim=1)
         
-        ## Even more vectorized version (slower maybe because of transpose)
-        # sim_matrix2 = torch.zeros(speakers_per_batch, speakers_per_batch, utterances_per_speaker
-        #                           ).to(self.loss_device)
-        # eye = np.eye(speakers_per_batch, dtype=np.int)
-        # mask = np.where(1 - eye)
-        # sim_matrix2[mask] = (embeds[mask[0]] * centroids_incl[mask[1]]).sum(dim=2)
-        # mask = np.where(eye)
-        # sim_matrix2[mask] = (embeds * centroids_excl).sum(dim=2)
-        # sim_matrix2 = sim_matrix2.transpose(1, 2)
-        
         sim_matrix = sim_matrix * self.similarity_weight + self.similarity_bias
         return sim_matrix
     
