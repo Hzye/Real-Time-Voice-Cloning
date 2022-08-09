@@ -87,7 +87,9 @@ class SpeakerEncoder(nn.Module):
                                  speakers_per_batch).to(self.loss_device)
         mask_matrix = 1 - np.eye(speakers_per_batch, dtype=np.int)
         for j in range(speakers_per_batch):
-            mask = np.where(mask_matrix[j])[0]
+            # each row in mask_matrix represents 1 speaker in batch
+            mask = np.where(mask_matrix[j])[0] # indexes of 1s in mask_matrix
+            # compute cosine sim via dot product
             sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
             sim_matrix[j, :, j] = (embeds[j] * centroids_excl[j]).sum(dim=1)
         
@@ -115,6 +117,7 @@ class SpeakerEncoder(nn.Module):
         speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
         
         # Loss
+        # shape (speakers_per_batch, utterances_per_speaker, speakers_per_batch)
         sim_matrix = self.similarity_matrix(embeds)
         sim_matrix = sim_matrix.reshape((speakers_per_batch * utterances_per_speaker, 
                                          speakers_per_batch))
