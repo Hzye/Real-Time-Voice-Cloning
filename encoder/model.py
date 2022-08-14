@@ -126,3 +126,49 @@ class SpeakerEncoder(nn.Module):
             eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
             
         return loss, eer
+
+
+
+    def ap_similarity_matrix(self, embeds):
+
+        speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
+
+        centroids = torch.mean(embeds[:,1:,:], dim=1, keepdim=True) # eq 6
+        centroids /= (utterances_per_speaker - 1) # eq 6
+        centroids = centroids.clone()/(torch.norm(centroids, dim=2, keepdim=True) + 1e-5) # normalise vector
+
+        query = embeds[:,0,:].unsqueeze(1) # should already be normalised from forward pass
+        #query = query.clone()/(torch.norm(query, dim=2, keepdim=True) + 1e-5) # normalise vector
+
+        # compute sed btwn every query and every speaker emb centroid
+        sim_matrix = torch.zeros(speakers_per_batch, 1, speakers_per_batch).to(self.loss_device)
+        for i in range(speakers_per_batch):
+            sim_matrix[:, :, i] = (query * centroids[i]).sum(dim=2)
+        
+        sim_matrix = sim_matrix * self.similarity_weight + self.similarity_bias
+        return sim_matrix
+
+    def angular_proto_loss(self, embeds):
+
+        assert embeds.size()[1] >= 2
+
+        criterion = nn.CrossEntropyLoss()
+
+        ap_sm = self.ap_similarity_matrix(embeds)
+        ap_sm = ap_sm.reshape((speakers_per_batch, speakers_per_batch))
+        ground_truth = np.arange(speakers_per_batch)
+        target = torch.from_numpy(ground_truth).long().to(self.loss_device)
+
+        loss = criterion(ap_sm, target)
+
+        # EER
+        with torch.no_grad():
+            inv_argmax = lambda i: np.eye(1, speakers_per_batch, i, dtype=int)[0]
+            labels = np.array([inv_argmax(i) for i in ground_truth])
+            preds = ap_sm.detach().cpu().numpy()
+
+            # Snippet from https://yangcha.github.io/EER-ROC/
+            fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())           
+            eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+
+        return loss, eer
