@@ -173,7 +173,7 @@ class Visualizations:
         # if out_fpath is not None:
         #     plt.savefig(out_fpath)
         if (step == 0) or (step == 10000) or (step == 50000) or (step == 200000) or (step == 1000000):
-            plt.savefig(f"umaps/step_{step}")
+            plt.savefig(f"umaps/step_{step}.png")
         plt.clf()
         
         
