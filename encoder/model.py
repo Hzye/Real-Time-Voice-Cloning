@@ -90,10 +90,11 @@ class SpeakerEncoder(nn.Module):
             # each row in mask_matrix represents 1 speaker in batch
             mask = np.where(mask_matrix[j])[0] # indexes of 1s in mask_matrix
             # compute cosine sim via dot product
-            sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
-            sim_matrix[j, :, j] = (embeds[j] * centroids_excl[j]).sum(dim=1)
-        
-        sim_matrix = sim_matrix * self.similarity_weight + self.similarity_bias
+            sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2) # otherwise
+            sim_matrix[mask, :, j] *= self.similarity_weight
+            sim_matrix[j, :, j] = (embeds[j] * centroids_incl[j] + self.similarity_bias).sum(dim=1) # i = k
+            sim_matrix[j, :, j] *= self.similarity_weight
+            
         return sim_matrix
     
     def loss(self, embeds):
@@ -130,7 +131,9 @@ class SpeakerEncoder(nn.Module):
 
 
     def ap_similarity_matrix(self, embeds):
-
+        """
+        SM for angular prototypical centroid loss
+        """
         speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
 
         centroids = torch.mean(embeds[:,1:,:], dim=1, keepdim=True) # eq 6
@@ -149,7 +152,9 @@ class SpeakerEncoder(nn.Module):
         return sim_matrix
 
     def angular_proto_loss(self, embeds):
-
+        """
+        Angular prototypical loss
+        """
         assert embeds.size()[1] >= 2
 
         criterion = nn.CrossEntropyLoss()
@@ -171,4 +176,61 @@ class SpeakerEncoder(nn.Module):
             fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())           
             eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
 
+        return loss, eer
+
+    def am_centroid_similarity_matrix(self, embeds):
+        """
+        SM for AM centroid loss
+        """
+        speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
+        
+        # Inclusive centroids (1 per speaker). Cloning is needed for reverse differentiation
+        centroids_incl = torch.mean(embeds, dim=1, keepdim=True)
+        centroids_incl = centroids_incl.clone() / (torch.norm(centroids_incl, dim=2, keepdim=True) + 1e-5)
+
+        # Exclusive centroids (1 per utterance)
+        centroids_excl = (torch.sum(embeds, dim=1, keepdim=True) - embeds)
+        centroids_excl /= (utterances_per_speaker - 1)
+        centroids_excl = centroids_excl.clone() / (torch.norm(centroids_excl, dim=2, keepdim=True) + 1e-5)
+
+        # Similarity matrix. The cosine similarity of already 2-normed vectors is simply the dot
+        # product of these vectors (which is just an element-wise multiplication reduced by a sum).
+        # We vectorize the computation for efficiency.
+        sim_matrix = torch.zeros(speakers_per_batch, utterances_per_speaker,
+                                 speakers_per_batch).to(self.loss_device)
+        mask_matrix = 1 - np.eye(speakers_per_batch, dtype=np.int)
+        for j in range(speakers_per_batch):
+            # each row in mask_matrix represents 1 speaker in batch
+            mask = np.where(mask_matrix[j])[0] # indexes of 1s in mask_matrix
+            # compute cosine sim via dot product
+            sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
+            sim_matrix[j, :, j] = (embeds[j] * centroids_incl[j]).sum(dim=1)
+        
+        sim_matrix = sim_matrix * self.similarity_weight + self.similarity_bias
+        return sim_matrix
+
+    def am_centroid_loss(self, embeds):
+        """
+        AM centroid loss
+        """
+        speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
+        
+        # Loss
+        # shape (speakers_per_batch, utterances_per_speaker, speakers_per_batch)
+        sim_matrix = self.am_centroid_similarity_matrix(embeds)
+        sim_matrix = sim_matrix.reshape((speakers_per_batch * utterances_per_speaker, 
+                                         speakers_per_batch))
+        ground_truth = np.repeat(np.arange(speakers_per_batch), utterances_per_speaker)
+        target = torch.from_numpy(ground_truth).long().to(self.loss_device)
+        loss = self.loss_fn(sim_matrix, target)
+        
+        # EER (not backpropagated)
+        with torch.no_grad():
+            inv_argmax = lambda i: np.eye(1, speakers_per_batch, i, dtype=np.int)[0]
+            labels = np.array([inv_argmax(i) for i in ground_truth])
+            preds = sim_matrix.detach().cpu().numpy()
+
+            # Snippet from https://yangcha.github.io/EER-ROC/
+            fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())           
+            eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
         return loss, eer
